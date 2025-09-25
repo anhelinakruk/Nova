@@ -15,15 +15,23 @@ use serde::{Deserialize, Serialize};
 
 use super::poseidon_inner::Arity;
 
+/// Hash type for domain separation in Poseidon
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound(serialize = "F: Serialize", deserialize = "F: Deserialize<'de>"))]
 pub enum HashType<F: PrimeField, A: Arity<F>> {
+  /// Merkle tree hash type
   MerkleTree,
+  /// Sparse merkle tree hash type with bitmask
   MerkleTreeSparse(u64),
+  /// Variable length hash type
   VariableLength,
+  /// Constant length hash type
   ConstantLength(usize),
+  /// Encryption hash type
   Encryption,
+  /// Custom hash type
   Custom(CType<F, A>),
+  /// Sponge hash type
   Sponge,
 }
 

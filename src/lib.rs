@@ -4,8 +4,7 @@
   unused,
   future_incompatible,
   nonstandard_style,
-  rust_2018_idioms,
-  missing_docs
+  rust_2018_idioms
 )]
 #![allow(non_snake_case)]
 #![forbid(unsafe_code)]

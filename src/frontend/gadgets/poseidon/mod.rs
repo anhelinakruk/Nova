@@ -14,6 +14,10 @@ mod round_numbers;
 mod serde_impl;
 mod sponge;
 
+pub use hash_type::HashType;
+pub use matrix::Matrix;
+pub use poseidon_inner::Poseidon;
+
 pub use circuit2::Elt;
 pub use poseidon_inner::PoseidonConstants;
 use round_constants::generate_constants;
@@ -45,7 +49,8 @@ fn round_numbers(arity: usize, strength: &Strength) -> (usize, usize) {
 const SBOX: u8 = 1; // x^5
 const FIELD: u8 = 1; // Gf(p)
 
-fn round_constants<F: PrimeField>(arity: usize, strength: &Strength) -> Vec<F> {
+// Generate Poseidon round constants
+pub fn round_constants<F: PrimeField>(arity: usize, strength: &Strength) -> Vec<F> {
   let t = arity + 1;
 
   let (full_rounds, partial_rounds) = round_numbers(arity, strength);
