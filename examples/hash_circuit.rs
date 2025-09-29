@@ -64,6 +64,7 @@ impl<G: Group> StepCircuit<G::Scalar> for PoseidonHashCircuit<G> {
       SpongeOp::Absorb(2),  // Wchłoń 2 elementy
       SpongeOp::Squeeze(1), // Wyciśnij 1 hash
     ]);
+
     let constants = Sponge::<G::Scalar, U3>::api_constants(Strength::Standard);
 
     // 4. Wykonaj hash w circuit (dodaje constraints)

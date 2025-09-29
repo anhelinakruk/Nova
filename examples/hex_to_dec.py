@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 hex_values = [
-   0x109b7f411ba0e4c9b2b70caf5c36a7b194be7c11ad24378bfedb68592ba8118b,
+        0x109b7f411ba0e4c9b2b70caf5c36a7b194be7c11ad24378bfedb68592ba8118b,
         0x3f0815ab463f1b76ee25a9b8768b3231a89752f427f4f063ab718e707576b31,
         0x15648bf46f60d82954c7e33029b3617357012a3d3b1d34c8e008859f1dbfb317,
         0x127e00c2253de07818ca7f2eafdd7564d05ea850cf61f1daa0cfefbf7fbfba85,
@@ -293,7 +293,7 @@ print("let poseidon_s = vec![")
 for i, val in enumerate(hex_values):
     hex_str = hex(val)
     if i == len(hex_values) - 1:
-        print(f'    F::from_str_vartime("{val}").ok_or(SynthesisError::Unsatisfiable)?,')
+        print(f'    Fr::from_str_vartime("{val}").unwrap(),')
     else:
-        print(f'    F::from_str_vartime("{val}").ok_or(SynthesisError::Unsatisfiable)?,')
+        print(f'    Fr::from_str_vartime("{val}").unwrap(),')
 print("];")  

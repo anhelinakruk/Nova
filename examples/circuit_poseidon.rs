@@ -15,15 +15,15 @@ type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<E2>;
 type S1 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E1, EE1>;
 type S2 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E2, EE2>;
 
-struct PoseidonConstants {
-  c: Vec<Fr>,
-  m: Vec<Vec<Fr>>,
-  p: Vec<Vec<Fr>>,
-  s: Vec<Fr>,
+pub struct PoseidonConstants {
+  pub c: Vec<Fr>,
+  pub m: Vec<Vec<Fr>>,
+  pub p: Vec<Vec<Fr>>,
+  pub s: Vec<Fr>,
 }
 
 impl PoseidonConstants {
-  fn new() -> Self {
+  pub fn new() -> Self {
     Self {
       c: vec![
         Fr::from_str_vartime(
@@ -442,6 +442,22 @@ impl PoseidonConstants {
       s: vec![
         Fr::from_str_vartime(
           "7511745149465107256748700652201246547602992235352608707588321460060273774987",
+        )
+        .unwrap(),
+        Fr::from_str_vartime(
+          "1781874611967874592137274483616240894881315449294815307306613366069350853425",
+        )
+        .unwrap(),
+        Fr::from_str_vartime(
+          "9676220459425127104563807626505378474104527268335041816433595157913150665495",
+        )
+        .unwrap(),
+        Fr::from_str_vartime(
+          "8364259238812534287689210722577399963878179320345509803468849104367466297989",
+        )
+        .unwrap(),
+        Fr::from_str_vartime(
+          "2889496767351495797946386949910896668575115361724249874917471657626490587069",
         )
         .unwrap(),
         Fr::from_str_vartime(
@@ -1582,7 +1598,7 @@ impl PoseidonCircuit {
   }
 }
 
-fn ark<CS: ConstraintSystem<Fr>>(
+pub fn ark<CS: ConstraintSystem<Fr>>(
   t: usize,
   r: usize,
   state: &[AllocatedNum<Fr>],
@@ -1603,7 +1619,7 @@ fn ark<CS: ConstraintSystem<Fr>>(
   Ok(ark_output)
 }
 
-fn sigma<CS: ConstraintSystem<Fr>>(
+pub fn sigma<CS: ConstraintSystem<Fr>>(
   value: &AllocatedNum<Fr>,
   cs: &mut CS,
 ) -> Result<AllocatedNum<Fr>, SynthesisError> {
@@ -1616,7 +1632,7 @@ fn sigma<CS: ConstraintSystem<Fr>>(
   Ok(x5)
 }
 
-fn iterated_add<CS: ConstraintSystem<Fr>>(
+pub fn iterated_add<CS: ConstraintSystem<Fr>>(
   cs: &mut CS,
   terms: &[AllocatedNum<Fr>],
 ) -> Result<AllocatedNum<Fr>, SynthesisError> {
@@ -1629,7 +1645,7 @@ fn iterated_add<CS: ConstraintSystem<Fr>>(
   Ok(sum)
 }
 
-fn mix<CS: ConstraintSystem<Fr>>(
+pub fn mix<CS: ConstraintSystem<Fr>>(
   t: usize,
   poseidon_m: &[Vec<Fr>],
   cs: &mut CS,
@@ -1654,7 +1670,7 @@ fn mix<CS: ConstraintSystem<Fr>>(
   Ok(new_state)
 }
 
-fn mix_last<CS: ConstraintSystem<Fr>>(
+pub fn mix_last<CS: ConstraintSystem<Fr>>(
   t: usize,
   poseidon_m: &[Vec<Fr>],
   cs: &mut CS,
@@ -1674,7 +1690,7 @@ fn mix_last<CS: ConstraintSystem<Fr>>(
   Ok(vec![mixed])
 }
 
-fn mix_s<CS: ConstraintSystem<Fr>>(
+pub fn mix_s<CS: ConstraintSystem<Fr>>(
   t: usize,
   r: usize,
   poseidon_s: &[Fr],
@@ -1712,7 +1728,7 @@ fn mix_s<CS: ConstraintSystem<Fr>>(
 }
 
 lazy_static! {
-  static ref POSEIDON_CONSTANTS: PoseidonConstants = PoseidonConstants::new();
+  pub static ref POSEIDON_CONSTANTS: PoseidonConstants = PoseidonConstants::new();
 }
 
 impl StepCircuit<Fr> for PoseidonCircuit {
@@ -1799,6 +1815,86 @@ impl StepCircuit<Fr> for PoseidonCircuit {
 
     Ok(final_result)
   }
+}
+
+pub fn hasher<CS: ConstraintSystem<Fr>>(
+  previous_hash: &AllocatedNum<Fr>,
+  new_input: &AllocatedNum<Fr>,
+  cs: &mut CS,
+) -> Result<AllocatedNum<Fr>, SynthesisError> {
+  let t = 3;
+  let n_rounds_f = 8;
+  let n_rounds_p = 57;
+
+  let constants = &*POSEIDON_CONSTANTS;
+
+  // Create initial state [0, previous_hash, new_input]
+  let zero = AllocatedNum::alloc(cs.namespace(|| "zero_initial"), || Ok(Fr::zero()))?;
+  let mut state = vec![zero, previous_hash.clone(), new_input.clone()];
+  println!("HASHER STATE: {:?}", state);
+
+  // Initial Ark
+  state = ark(t, 0, &state, &constants.c, cs)?;
+
+  // First half of full rounds
+  for r in 0..(n_rounds_f / 2 - 1) {
+    for value in &mut state {
+      *value = sigma(value, cs)?;
+    }
+    state = ark(t, (r + 1) * t, &state, &constants.c, cs)?;
+    state = mix(t, &constants.m, cs, &state)?;
+  }
+
+  // Middle round
+  state = state
+    .iter()
+    .map(|val| sigma(val, cs))
+    .collect::<Result<Vec<_>, _>>()?;
+  state = ark(t, (n_rounds_f / 2) * t, &state, &constants.c, cs)?;
+  state = mix(t, &constants.p, cs, &state)?;
+
+  // Partial rounds
+  for r in 0..n_rounds_p {
+    let sigma_result = sigma(&state[0], cs)?;
+    let constant = AllocatedNum::alloc(cs.namespace(|| format!("partial_const_{}", r)), || {
+      Ok(constants.c[(n_rounds_f / 2 + 1) * t + r])
+    })?;
+    let first = sigma_result.add(cs.namespace(|| format!("partial_add_{}", r)), &constant)?;
+    state = mix_s(
+      t,
+      r,
+      &constants.s,
+      cs,
+      &[vec![first], state[1..].to_vec()].concat(),
+    )?;
+  }
+
+  // Second half of full rounds
+  for r in 0..(n_rounds_f / 2 - 1) {
+    for value in &mut state {
+      *value = sigma(value, cs)?;
+    }
+    state = ark(
+      t,
+      (n_rounds_f / 2 + 1) * t + n_rounds_p + r * t,
+      &state,
+      &constants.c,
+      cs,
+    )?;
+    state = mix(t, &constants.m, cs, &state)?;
+  }
+
+  // Final Round
+  state = state
+    .iter()
+    .map(|val| sigma(val, cs))
+    .collect::<Result<Vec<_>, _>>()?;
+
+  // Final MixLast - returns only the hash (first element)
+  let final_result = mix_last(t, &constants.m, cs, &state, 0)?;
+
+  // Return just the hash (single element)
+  Ok(final_result[0].clone())
 }
 
 fn main() {
