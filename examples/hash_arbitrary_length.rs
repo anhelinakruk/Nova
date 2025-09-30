@@ -19,7 +19,7 @@ type S2 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E2, EE2>;
 
 #[derive(Clone, Debug)]
 struct PoseidonHashCircuit<G: Group> {
-  data: Vec<G::Scalar>, // Data to hash: [1, 2]
+  data: Vec<G::Scalar>, 
 }
 
 impl<G: Group> PoseidonHashCircuit<G> {
@@ -30,36 +30,31 @@ impl<G: Group> PoseidonHashCircuit<G> {
 
 impl<G: Group<Scalar = Fr>> StepCircuit<G::Scalar> for PoseidonHashCircuit<G> {
   fn arity(&self) -> usize {
-    1 // Returns just the hash
+    1 
   }
 
-  // Simple sponge: [0, 0, 0] + [1, 2] → hash
   fn synthesize<CS: ConstraintSystem<G::Scalar>>(
     &self,
     cs: &mut CS,
-    z_in: &[AllocatedNum<G::Scalar>], // [dummy_input] - not used
+    z_in: &[AllocatedNum<G::Scalar>],
   ) -> Result<Vec<AllocatedNum<G::Scalar>>, SynthesisError> {
-    // Initialize sponge state: [0, 0, 0]
     let zero = AllocatedNum::alloc(cs.namespace(|| "zero"), || Ok(Fr::zero()))?;
     let mut state = vec![zero.clone(), zero.clone(), zero.clone()];
 
-    // Absorb data into rate portion (positions 1 and 2)
+
     for (i, &data_val) in self.data.iter().enumerate() {
-      if i < 2 { // rate = 2 (positions 1,2)
+      if i < 2 { 
         let data_alloc = AllocatedNum::alloc(cs.namespace(|| format!("data_{}", i)), || Ok(data_val))?;
         state[i + 1] = state[i + 1].add(cs.namespace(|| format!("absorb_{}", i)), &data_alloc)?;
       }
     }
-    // Now state = [0, 1, 2]
 
-    // Apply full Poseidon permutation
     let permuted_state = permutation(&state, cs)?;
 
-    // Squeeze phase: apply mix_last to extract final hash
     let constants = &*circuit_poseidon::POSEIDON_CONSTANTS;
     let final_hash = circuit_poseidon::mix_last(3, &constants.m, cs, &permuted_state, 0)?;
     
-    Ok(final_hash) // Returns [hash]
+    Ok(final_hash) 
   }
 }
 
@@ -141,7 +136,6 @@ fn hash_example() -> Result<(), Box<dyn std::error::Error>> {
   let numbers = vec![1, 2];
   println!("Simple sponge hashing: {:?}", numbers);
 
-  // Convert to Fr
   let data_fr: Vec<Fr> = numbers.iter().map(|&x| Fr::from_u128(x)).collect();
   let circuit = PoseidonHashCircuit::new(data_fr);
 
@@ -151,13 +145,11 @@ fn hash_example() -> Result<(), Box<dyn std::error::Error>> {
     &*S2::ck_floor(),
   )?;
 
-  // Initial state (dummy input)
   let z0 = vec![Fr::zero()];
 
   let mut recursive_snark = RecursiveSNARK::new(&pp, &circuit, &z0)?;
   println!("Computing hash...");
   
-  // Single step: absorb [1,2] into [0,0,0] → permutation → squeeze
   recursive_snark.prove_step(&pp, &circuit)?;
 
   let final_state = recursive_snark.verify(&pp, 1, &z0)?;

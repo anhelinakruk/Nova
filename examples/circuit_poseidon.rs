@@ -1586,12 +1586,12 @@ impl PoseidonConstants {
 }
 
 #[derive(Clone)]
-struct PoseidonCircuit {
+pub struct PoseidonCircuit {
   _state: std::marker::PhantomData<Vec<Fr>>,
 }
 
 impl PoseidonCircuit {
-  fn new() -> Self {
+  pub fn new() -> Self {
     Self {
       _state: std::marker::PhantomData,
     }
