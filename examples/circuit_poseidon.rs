@@ -1,11 +1,14 @@
+use core::hash;
+use std::time::Instant;
+
 use ff::{Field, PrimeField};
 use halo2curves::bn256::Fr;
 use lazy_static::lazy_static;
 use nova_snark::{
-  frontend::{num::AllocatedNum, ConstraintSystem, SynthesisError},
+  frontend::{num::AllocatedNum, ConstraintSystem, Elt, SynthesisError},
   nova::{PublicParams, RecursiveSNARK},
   provider::{Bn256EngineKZG, GrumpkinEngine},
-  traits::{circuit::StepCircuit, snark::RelaxedR1CSSNARKTrait},
+  traits::{circuit::{self, StepCircuit}, snark::RelaxedR1CSSNARKTrait, Engine, Group},
 };
 
 type E1 = Bn256EngineKZG;
@@ -1585,19 +1588,6 @@ impl PoseidonConstants {
   }
 }
 
-#[derive(Clone)]
-pub struct PoseidonCircuit {
-  _state: std::marker::PhantomData<Vec<Fr>>,
-}
-
-impl PoseidonCircuit {
-  pub fn new() -> Self {
-    Self {
-      _state: std::marker::PhantomData,
-    }
-  }
-}
-
 pub fn ark<CS: ConstraintSystem<Fr>>(
   t: usize,
   r: usize,
@@ -1687,7 +1677,7 @@ pub fn mix_last<CS: ConstraintSystem<Fr>>(
   }
   let mixed = iterated_add(cs, &terms)?;
 
-  Ok(vec![mixed])
+  Ok(vec![mixed.clone(), mixed])
 }
 
 pub fn mix_s<CS: ConstraintSystem<Fr>>(
@@ -1730,93 +1720,6 @@ pub fn mix_s<CS: ConstraintSystem<Fr>>(
 lazy_static! {
   pub static ref POSEIDON_CONSTANTS: PoseidonConstants = PoseidonConstants::new();
 }
-
-impl StepCircuit<Fr> for PoseidonCircuit {
-  fn arity(&self) -> usize {
-    2
-  }
-
-  fn synthesize<CS: ConstraintSystem<Fr>>(
-    &self,
-    cs: &mut CS,
-    z: &[AllocatedNum<Fr>],
-  ) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
-    let t = 3;
-    let n_rounds_f = 8;
-    let n_rounds_p = 57;
-
-    let constants = &*POSEIDON_CONSTANTS;
-
-    // Create initial state [0, x, y] where x,y come from input z
-    let zero = AllocatedNum::alloc(cs.namespace(|| "zero_initial"), || Ok(Fr::zero()))?;
-    let mut state = vec![zero, z[0].clone(), z[1].clone()];
-
-    // Initial Ark
-    state = ark(t, 0, &state, &constants.c, cs)?;
-
-    // First half of full rounds
-    for r in 0..(n_rounds_f / 2 - 1) {
-      for value in &mut state {
-        *value = sigma(value, cs)?;
-      }
-      state = ark(t, (r + 1) * t, &state, &constants.c, cs)?;
-      state = mix(t, &constants.m, cs, &state)?;
-    }
-
-    // Middle round
-    state = state
-      .iter()
-      .map(|val| sigma(val, cs))
-      .collect::<Result<Vec<_>, _>>()?;
-    state = ark(t, (n_rounds_f / 2) * t, &state, &constants.c, cs)?;
-    state = mix(t, &constants.p, cs, &state)?;
-
-    // Partial rounds
-    for r in 0..n_rounds_p {
-      let sigma_result = sigma(&state[0], cs)?;
-      let constant = AllocatedNum::alloc(cs.namespace(|| format!("partial_const_{}", r)), || {
-        Ok(constants.c[(n_rounds_f / 2 + 1) * t + r])
-      })?;
-      let first = sigma_result.add(cs.namespace(|| format!("partial_add_{}", r)), &constant)?;
-      state = mix_s(
-        t,
-        r,
-        &constants.s,
-        cs,
-        &[vec![first], state[1..].to_vec()].concat(),
-      )?;
-    }
-
-    // Second half of full rounds
-    for r in 0..(n_rounds_f / 2 - 1) {
-      for value in &mut state {
-        *value = sigma(value, cs)?;
-      }
-      state = ark(
-        t,
-        (n_rounds_f / 2 + 1) * t + n_rounds_p + r * t,
-        &state,
-        &constants.c,
-        cs,
-      )?;
-      state = mix(t, &constants.m, cs, &state)?;
-    }
-
-    // Final Round
-    state = state
-      .iter()
-      .map(|val| sigma(val, cs))
-      .collect::<Result<Vec<_>, _>>()?;
-
-    // Final MixLast
-    let final_result = mix_last(t, &constants.m, cs, &state, 0)?;
-
-    println!("Poseidon output: {:?}", final_result[0]);
-
-    Ok(final_result)
-  }
-}
-
 pub fn hasher<CS: ConstraintSystem<Fr>>(
   previous_hash: &AllocatedNum<Fr>,
   new_input: &AllocatedNum<Fr>,
@@ -1897,16 +1800,94 @@ pub fn hasher<CS: ConstraintSystem<Fr>>(
   Ok(final_result[0].clone())
 }
 
+
+#[derive(Clone, Debug)]
+struct HashChainCircuit {
+  num_elts_per_step: usize,
+  x_i: Vec<Fr>,
+}
+
+impl HashChainCircuit {
+  fn new(x_i: Vec<Fr>, num_elts_per_step: usize) -> Self {
+    Self {
+      num_elts_per_step,
+      x_i,
+    }
+  }
+}
+
+impl StepCircuit<Fr> for HashChainCircuit {
+  fn arity(&self) -> usize {
+    1
+  }
+
+  fn synthesize<CS: ConstraintSystem<Fr>>(
+    &self,
+    cs: &mut CS,
+    z_in: &[AllocatedNum<Fr>],
+  ) -> Result<Vec<AllocatedNum<Fr>>, SynthesisError> {
+    assert_eq!(z_in.len(), 1);
+
+    let x_i = (0..self.num_elts_per_step)
+      .map(|i| AllocatedNum::alloc(cs.namespace(|| format!("x_{i}")), || Ok(self.x_i[i])))
+      .collect::<Result<Vec<_>, _>>()?;
+
+    let previous_hash = &z_in[0];
+    let new_input = &x_i[0];
+    
+    let z_out = hasher(previous_hash, new_input, &mut cs.namespace(|| "hash_step"))?;
+
+    println!("HashChain step: previous_hash = {:?}, new_input = {:?} -> hash = {:?}", 
+             previous_hash.get_value().unwrap_or_default(),
+             new_input.get_value().unwrap_or_default(),
+             z_out.get_value().unwrap_or_default());
+
+    Ok(vec![z_out])
+  }
+}
+
 fn main() {
-  let circuit = PoseidonCircuit::new();
-  let z0 = vec![Fr::from(1u64), Fr::from(2u64)];
+    let sequence = vec![Fr::from_u128(1u128), Fr::from_u128(8), Fr::from_u128(3u128), Fr::from_u128(4u128), Fr::from_u128(5u128), Fr::from_u128(6u128),  Fr::from_u128(7u128)];
+    let num_elts_per_step = 1; 
+    let num_steps = sequence.len() - 1;
 
-  let pp =
-    PublicParams::<E1, E2, PoseidonCircuit>::setup(&circuit, &*S1::ck_floor(), &*S2::ck_floor())
-      .unwrap();
+    // hash(1, 2)
+    let circuit = HashChainCircuit::new(vec![sequence[1]], num_elts_per_step);
 
-  let mut recursive_snark = RecursiveSNARK::new(&pp, &circuit, &z0).unwrap();
-  recursive_snark.prove_step(&pp, &circuit).unwrap();
-  let result = recursive_snark.verify(&pp, 1, &z0).unwrap();
-  println!("Nova Poseidon([0,1,2]): {:?}", result);
+
+    let pp = PublicParams::<E1, E2, HashChainCircuit>::setup(
+      &circuit,
+      &S1::ck_floor(),
+      &S2::ck_floor(),
+    )
+    .unwrap();
+
+    // Krok 0: hashuje (1, 2) 
+    // Krok 1: hashuje (hash(1,2), 3)
+    let mut circuits: Vec<HashChainCircuit> = vec![];
+    for i in 1..sequence.len() {
+      let hashchain = HashChainCircuit::new(vec![sequence[i]], num_elts_per_step);
+      circuits.push(hashchain);
+    }
+    // let circuits = vec![
+    //   HashChainCircuit::new(vec![sequence[1]], num_elts_per_step), // 2
+    //   HashChainCircuit::new(vec![sequence[2]], num_elts_per_step), // 3
+    // ];
+      
+    type C = HashChainCircuit;
+
+    let initial_state = vec![Fr::from(1u64)]; 
+    let mut recursive_snark: RecursiveSNARK<E1, E2, C> =
+      RecursiveSNARK::<E1, E2, C>::new(&pp, &circuits[0], &initial_state)
+        .unwrap();
+
+    for circuit in circuits.iter() {
+      let res = recursive_snark.prove_step(&pp, circuit);
+      assert!(res.is_ok());
+    }
+
+    let res = recursive_snark.verify(&pp, num_steps, &initial_state);
+    println!("RecursiveSNARK::verify: {:?}", res.is_ok(),);
+    assert!(res.is_ok());
+    println!("Hashchain completed: hash(hash(1,2), 3)");
 }
